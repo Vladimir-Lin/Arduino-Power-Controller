@@ -4,6 +4,9 @@
 #include "EEPROM.h"
 #include "ESP8266WiFi.h"
 #include "ESP8266WebServer.h"
+#include "ESP8266mDNS.h"
+//////////////////////////////////////////////////////////////////////////////
+bool Console = true                                                          ;
 //////////////////////////////////////////////////////////////////////////////
 // EEPROM Functions
 //////////////////////////////////////////////////////////////////////////////
@@ -39,6 +42,15 @@ void ReadFromEEPROM ( int address , int len , char * Buffer                ) {
 //////////////////////////////////////////////////////////////////////////////
 void SetEsp8266WifiSTA (                                                   ) {
   WiFi . mode          ( WIFI_STA                                          ) ;
+  WiFi . disconnect    (                                                   ) ;
+}
+//////////////////////////////////////////////////////////////////////////////
+// -| SetEsp8266WifiSTA |-
+//////////////////////////////////////////////////////////////////////////////
+// +| SetEsp8266WifiAP |+
+//////////////////////////////////////////////////////////////////////////////
+void SetEsp8266WifiAP  (                                                   ) {
+  WiFi . mode          ( WIFI_AP                                           ) ;
   WiFi . disconnect    (                                                   ) ;
 }
 //////////////////////////////////////////////////////////////////////////////
@@ -121,11 +133,14 @@ void SetInput         ( int id      )                                        {
 //////////////////////////////////////////////////////////////////////////////
 // +| SetPin |+
 //////////////////////////////////////////////////////////////////////////////
-void SetPin   ( int id , int mode )                                          {
-  if          ( mode == 0         )                                          {
-    SetInput  ( id                )                                          ;
+void SetPin   ( int id , int mode                                          ) {
+  if          ( Console && ( id == 1 )                                     ) {
+    return                                                                   ;
+  }                                                                          ;
+  if          ( mode == 0                                                  ) {
+    SetInput  ( id                                                         ) ;
   } else                                                                     {
-    SetOutput ( id                )                                          ;
+    SetOutput ( id                                                         ) ;
   }
 }
 //////////////////////////////////////////////////////////////////////////////
@@ -183,11 +198,14 @@ void WriteLow              ( int id    )                                     {
 //////////////////////////////////////////////////////////////////////////////
 // +| WriteValue |+
 //////////////////////////////////////////////////////////////////////////////
-void WriteValue ( int id , int mode )                                        {
-  if            ( mode == 0         )                                        {
-    WriteLow    (     id            )                                        ;
+void WriteValue ( int id , int mode                                        ) {
+  if            ( Console && ( id == 1 )                                   ) {
+    return                                                                   ;
+  }                                                                          ;
+  if            ( mode == 0                                                ) {
+    WriteLow    (     id                                                   ) ;
   } else                                                                     {
-    WriteHigh   (     id            )                                        ;
+    WriteHigh   (     id                                                   ) ;
   }
 }
 //////////////////////////////////////////////////////////////////////////////
@@ -196,6 +214,9 @@ void WriteValue ( int id , int mode )                                        {
 // +| ReadValue |+
 //////////////////////////////////////////////////////////////////////////////
 int ReadValue                    ( int id )                                  {
+  if                             ( Console && ( id == 1 )                  ) {
+    return 0                                                                 ;
+  }                                                                          ;
   switch                         (     id )                                  {
     case  0 : return digitalRead ( D0     )                                  ;
     case  1 : return digitalRead ( D1     )                                  ;
@@ -353,17 +374,19 @@ class PowerController
 } ;
 //////////////////////////////////////////////////////////////////////////////
 int           Debug             = 1                                          ;
-bool          Console           = true                                       ;
 int           BaudRate          = 115200                                     ;
 int           EepromSize        = 4096                                       ;
 bool          doDelay           = true                                       ;
 unsigned int  MicrosecondsDelay = 1000000                                    ;
 //////////////////////////////////////////////////////////////////////////////
-void LoopDelay      (                                                      ) {
-  if                ( ! doDelay                                            ) {
+void LoopDelay       (                                                     ) {
+  if                 ( ! doDelay                                           ) {
     return                                                                   ;
   }                                                                          ;
-  delayMicroseconds ( MicrosecondsDelay                                    ) ;
+  delayMicroseconds  ( MicrosecondsDelay                                   ) ;
+  if                 ( Console                                             ) {
+    Serial . println ( millis ( ) , DEC                                    ) ;
+  }                                                                          ;
 }
 //////////////////////////////////////////////////////////////////////////////
 // 電源控制器掃描控制點
@@ -383,7 +406,7 @@ void InitializePowerControllers ( void )                                     {
   for ( int i = 0 ; i < MaxPowerControllers ; i++ )                          {
     outputValue = int ( DefaultOutputValues [ i ] )                          ;
     inputValue  = int ( DefaultInputValues  [ i ] )                          ;
-    PC [ i ] = new PowerController ( i , i + MaxPowerControllers , psw     ) ;
+    PC [ i ] = new PowerController ( i + MaxPowerControllers , i , psw     ) ;
     PC [ i ] -> Turn               ( ( outputValue > 0 ) ? true : false    ) ;
     PC [ i ] -> GetInput           (                                       ) ;
   }
@@ -420,18 +443,20 @@ void ProbePowerControllers ( void                                          ) {
     DefaultInputValues  [ i ] = in ? 1 : 0                                   ;
   }                                                                          ;
   ////////////////////////////////////////////////////////////////////////////
-  WriteToEEPROM            ( 160 , 8 , DefaultOutputValues                 ) ;
-  WriteToEEPROM            ( 168 , 8 , DefaultInputValues                  ) ;
+  WriteToEEPROM            ( 192 , 8 , DefaultOutputValues                 ) ;
+  WriteToEEPROM            ( 200 , 8 , DefaultInputValues                  ) ;
   ////////////////////////////////////////////////////////////////////////////
 }
 //////////////////////////////////////////////////////////////////////////////
-bool               RewriteEEPROM   = false                                   ;
+bool               RewriteEEPROM   = true                                    ;
 int                WifiMode        = 2                                       ;
 bool               WifiConnected   = false                                   ;
+int                WifiTimestamp   = 0                                       ;
 char             * WifiSSID        = "Actions 7f"                            ;
 char             * WifiPassword    = "0912388888"                            ;
 char             * OriphaseArduino = "Oriphase"                              ;
 char             * ArduinoSite     = "ArduinoPowerController"                ;
+char             * SapPassword     = ""                                      ;
 char             * SiteUsername    = "admin"                                 ;
 char             * SitePassword    = "123456789"                             ;
 bool               AssignIP        = false                                   ;
@@ -542,32 +567,109 @@ void ReportWIFI              (                                             ) {
   ////////////////////////////////////////////////////////////////////////////
 }
 //////////////////////////////////////////////////////////////////////////////
+bool isConnectionTimeout     ( void                                        ) {
+  int dt = millis            (                                             ) ;
+  dt -= WifiTimestamp                                                        ;
+  return                     ( dt > 10000                                  ) ;
+}
+//////////////////////////////////////////////////////////////////////////////
+void ConnectToWIFI           (                                             ) {
+  ////////////////////////////////////////////////////////////////////////////
+  int dt                                                                     ;
+  int status                                                                 ;
+  ////////////////////////////////////////////////////////////////////////////
+  SetEsp8266WifiSTA          (                                             ) ;
+  ////////////////////////////////////////////////////////////////////////////
+  WiFi   . begin             ( WifiSSID , WifiPassword                     ) ;
+  if                         ( AssignIP                                    ) {
+    WiFi . config            ( ComposeIP ( HostIP      )                     , // IP Address
+                               ComposeIP ( HostGateway )                     , // Gateway
+                               ComposeIP ( HostNetmask )                   ) ; // Netmask
+  }                                                                          ;
+  WifiConnected = false                                                      ;
+  WifiTimestamp = millis     (                                             ) ;
+  ////////////////////////////////////////////////////////////////////////////
+  do                                                                         {
+    delay                    ( 100                                         ) ;
+    status = WiFi . status   (                                             ) ;
+    dt     = millis          (                                             ) ;
+  } while ( ( status != WL_CONNECTED ) && ( ( dt-WifiTimestamp ) < 5000 )  ) ;
+  ////////////////////////////////////////////////////////////////////////////
+  if                         ( status == WL_CONNECTED                      ) {
+    //////////////////////////////////////////////////////////////////////////
+    WifiConnected = true                                                     ;
+    PrepareHTTP              (                                             ) ;
+    //////////////////////////////////////////////////////////////////////////
+  }                                                                          ;
+  ////////////////////////////////////////////////////////////////////////////
+}
+//////////////////////////////////////////////////////////////////////////////
+void BuildUpSoftAP           (                                             ) {
+  ////////////////////////////////////////////////////////////////////////////
+  SetEsp8266WifiAP           (                                             ) ;
+  ////////////////////////////////////////////////////////////////////////////
+  WiFi   . begin             ( ArduinoSite , SapPassword                   ) ;
+//  WiFi   . softAP            ( ArduinoSite , SapPassword                   ) ;
+//  IPAddress myIP = WiFi.softAPIP();
+  if                         ( MDNS . begin ( OriphaseArduino )            ) {
+    MDNS . addService        ( "http" , "tcp" , 80                         ) ;
+  }                                                                          ;
+//  if                         ( AssignIP                                    ) {
+//    WiFi . config            ( ComposeIP ( HostIP      )                     , // IP Address
+//                               ComposeIP ( HostGateway )                     , // Gateway
+//                               ComposeIP ( HostNetmask )                   ) ; // Netmask
+//  }                                                                          ;
+  WifiConnected = true                                                       ;
+  WifiTimestamp = millis     (                                             ) ;
+  ////////////////////////////////////////////////////////////////////////////
+  if                         ( Console                                     ) {
+    Serial . print           ( "Soft Access Point : "                      ) ;
+    Serial . println         ( WiFi . softAPIP ( )                         ) ;
+  }                                                                          ;
+  ////////////////////////////////////////////////////////////////////////////
+}
+//////////////////////////////////////////////////////////////////////////////
+void PrepareHTTP             ( void                                        ) {
+  ////////////////////////////////////////////////////////////////////////////
+  if                         ( ! HttpInitialized                           ) {
+    HttpInitialized = true                                                   ;
+    HttpServer -> on         ( "/"           , WebServerEntry              ) ;
+    HttpServer -> on         ( "/index.html" , WebServerEntry              ) ;
+    HttpServer -> on         ( "/WIFI"       , WebServerWIFI               ) ;
+    HttpServer -> on         ( "/AJAX"       , WebServerAJAX               ) ;
+    HttpServer -> onNotFound (                 WebServerNotFound           ) ;
+    HttpServer -> begin      (                                             ) ;
+  }                                                                          ;
+  ////////////////////////////////////////////////////////////////////////////
+  if                         ( Console                                     ) {
+    //////////////////////////////////////////////////////////////////////////
+    ReportWIFI               (                                             ) ;
+    //////////////////////////////////////////////////////////////////////////
+    Serial . println         ( ""                                          ) ;
+    Serial . print           ( "IP address: "                              ) ;
+    Serial . println         ( WiFi . localIP ( )                          ) ;
+    Serial . println         ( "WiFi status:"                              ) ;
+    WiFi   . printDiag       ( Serial                                      ) ;
+    //////////////////////////////////////////////////////////////////////////
+  }                                                                          ;
+  ////////////////////////////////////////////////////////////////////////////
+}
+//////////////////////////////////////////////////////////////////////////////
 void SetupWIFI               (                                             ) {
   ////////////////////////////////////////////////////////////////////////////
   switch                     (  WifiMode                                   ) {
     //////////////////////////////////////////////////////////////////////////
     case 1                                                                   :
       ////////////////////////////////////////////////////////////////////////
+      BuildUpSoftAP          (                                             ) ;
+      HttpServer    = new ESP8266WebServer ( WifiHttpPort                  ) ;
       ////////////////////////////////////////////////////////////////////////
     break                                                                    ;
     //////////////////////////////////////////////////////////////////////////
     case 2                                                                   :
       ////////////////////////////////////////////////////////////////////////
-      SetEsp8266WifiSTA      (                                             ) ;
-      ////////////////////////////////////////////////////////////////////////
-      WiFi   . begin         ( WifiSSID , WifiPassword                     ) ;
-      if                     ( AssignIP                                    ) {
-        WiFi . config        ( ComposeIP ( HostIP      )                     , // IP Address
-                               ComposeIP ( HostGateway )                     , // Gateway
-                               ComposeIP ( HostNetmask )                   ) ; // Netmask
-      }                                                                      ;
+      ConnectToWIFI          (                                             ) ;
       HttpServer    = new ESP8266WebServer ( WifiHttpPort                  ) ;
-      WifiConnected = false                                                  ;
-      ////////////////////////////////////////////////////////////////////////
-    break                                                                    ;
-    //////////////////////////////////////////////////////////////////////////
-    case 3                                                                   :
-      ////////////////////////////////////////////////////////////////////////
       ////////////////////////////////////////////////////////////////////////
     break                                                                    ;
     //////////////////////////////////////////////////////////////////////////
@@ -581,6 +683,13 @@ void DoingWIFI              (                                              ) {
     //////////////////////////////////////////////////////////////////////////
     case 1                                                                   :
       ////////////////////////////////////////////////////////////////////////
+      if                    ( HttpInitialized                              ) {
+        if                  ( HttpServer != nullptr                        ) {
+          HttpServer -> handleClient ( )                                     ;
+        }                                                                    ;
+      } else                                                                 {
+        PrepareHTTP         (                                              ) ;
+      }                                                                      ;
       ////////////////////////////////////////////////////////////////////////
     break                                                                    ;
     //////////////////////////////////////////////////////////////////////////
@@ -596,37 +705,14 @@ void DoingWIFI              (                                              ) {
         if                  ( WiFi . status ( ) == WL_CONNECTED            ) {
           ////////////////////////////////////////////////////////////////////
           WifiConnected = true                                               ;
-          ////////////////////////////////////////////////////////////////////
-          if                ( ! HttpInitialized                            ) {
-            HttpInitialized = true                                           ;
-            HttpServer -> on         ( "/"           , WebServerEntry      ) ;
-            HttpServer -> on         ( "/index.html" , WebServerEntry      ) ;
-            HttpServer -> on         ( "/WIFI"       , WebServerWIFI       ) ;
-            HttpServer -> on         ( "/AJAX"       , WebServerAJAX       ) ;
-            HttpServer -> onNotFound (                 WebServerNotFound   ) ;
-            HttpServer -> begin      (                                     ) ;
-          }                                                                  ;
-          ////////////////////////////////////////////////////////////////////
-          if                ( Console                                      ) {
-            //////////////////////////////////////////////////////////////////
-            ReportWIFI      (                                              ) ;
-            //////////////////////////////////////////////////////////////////
-            Serial . println ( ""                                          ) ;
-            Serial . print   ( "IP address: "                              ) ;
-            Serial . println ( WiFi . localIP ( )                          ) ;
-            Serial . println ( "WiFi status:"                              ) ;
-            WiFi   . printDiag ( Serial                                    ) ;
-            //////////////////////////////////////////////////////////////////
-          }                                                                  ;
+          PrepareHTTP       (                                              ) ;
           ////////////////////////////////////////////////////////////////////
         } else                                                               {
+          if                ( isConnectionTimeout ( )                      ) {
+            ConnectToWIFI   (                                              ) ;
+          }                                                                  ;
         }                                                                    ;
       }                                                                      ;
-      ////////////////////////////////////////////////////////////////////////
-    break                                                                    ;
-    //////////////////////////////////////////////////////////////////////////
-    case 3                                                                   :
-      ////////////////////////////////////////////////////////////////////////
       ////////////////////////////////////////////////////////////////////////
     break                                                                    ;
     //////////////////////////////////////////////////////////////////////////
@@ -637,26 +723,27 @@ void DoingWIFI              (                                              ) {
 typedef struct OriphaseConfigure                                             {
   char         Oriphase     [  8 ]                                           ; //   0
   char         Site         [ 24 ]                                           ; //   8
-  char         WifiSSID     [ 32 ]                                           ; //  32
-  char         WifiPassword [ 32 ]                                           ; //  64
-  char         Username     [ 32 ]                                           ; //  96
-  char         Password     [ 32 ]                                           ; // 128
-  char         Outputs      [  8 ]                                           ; // 160
-  char         Inputs       [  8 ]                                           ; // 168
-  char         IP           [  4 ]                                           ; // 176
-  char         Gateway      [  4 ]                                           ; // 180
-  char         Netmask      [  4 ]                                           ; // 184
-  char         Debug                                                         ; // 188
-  char         Console                                                       ; // 189
-  char         Controllers                                                   ; // 190
-  char         WifiMode                                                      ; // 191
-  char         doDelay                                                       ; // 192
-  char         AssignIP                                                      ; // 193
-  char         SwitchMode                                                    ; // 194
-  char         Something                                                     ; // 195
-  int          BaudRate                                                      ; // 196
-  unsigned int MicrosecondsDelay                                             ; // 200
-  int          HttpPort                                                      ; // 204
+  char         SapPassword  [ 32 ]                                           ; //  32
+  char         WifiSSID     [ 32 ]                                           ; //  64
+  char         WifiPassword [ 32 ]                                           ; //  96
+  char         Username     [ 32 ]                                           ; // 128
+  char         Password     [ 32 ]                                           ; // 160
+  char         Outputs      [  8 ]                                           ; // 192
+  char         Inputs       [  8 ]                                           ; // 200
+  char         IP           [  4 ]                                           ; // 208
+  char         Gateway      [  4 ]                                           ; // 212
+  char         Netmask      [  4 ]                                           ; // 216
+  char         Debug                                                         ; // 220
+  char         Console                                                       ; // 221
+  char         Controllers                                                   ; // 222
+  char         WifiMode                                                      ; // 223
+  char         doDelay                                                       ; // 224
+  char         AssignIP                                                      ; // 225
+  char         SwitchMode                                                    ; // 226
+  char         Something                                                     ; // 227
+  int          BaudRate                                                      ; // 228
+  unsigned int MicrosecondsDelay                                             ; // 232
+  int          HttpPort                                                      ; // 236
 }              OriphaseConfigure                                             ;
 //////////////////////////////////////////////////////////////////////////////
 void ReloadEEPROM      ( void                                              ) {
@@ -665,12 +752,6 @@ void ReloadEEPROM      ( void                                              ) {
   bool              initialized = true                                       ;
   char              OriphaseInitialized [ 9 ]                                ;
   OriphaseConfigure conf                                                     ;
-  ////////////////////////////////////////////////////////////////////////////
-  if                   ( Console                                           ) {
-    //////////////////////////////////////////////////////////////////////////
-    Serial . println   ( "Trying Reload from EEPROM"                       ) ;
-    //////////////////////////////////////////////////////////////////////////
-  }                                                                          ;
   ////////////////////////////////////////////////////////////////////////////
   memset               ( &conf , 0 , sizeof ( OriphaseConfigure )          ) ;
   ////////////////////////////////////////////////////////////////////////////
@@ -687,22 +768,17 @@ void ReloadEEPROM      ( void                                              ) {
   ////////////////////////////////////////////////////////////////////////////
   if                   ( ( ! initialized ) || RewriteEEPROM                ) {
     //////////////////////////////////////////////////////////////////////////
-    if                 ( Console                                           ) {
-      ////////////////////////////////////////////////////////////////////////
-      Serial . println ( "Initialize EEPROM"                               ) ;
-      ////////////////////////////////////////////////////////////////////////
-    }                                                                        ;
-    //////////////////////////////////////////////////////////////////////////
     for                ( int i = 0 ; i < 8 ; i++                           ) {
-      SetPin           ( i + 8  , 0                                        ) ;
-      SetPin           ( i      , 1                                        ) ;
-      v = ReadValue    ( i + 8                                             ) ;
+      SetPin           ( i      , 0                                        ) ;
+      SetPin           ( i + 8  , 1                                        ) ;
+      v = ReadValue    ( i                                                 ) ;
       DefaultOutputValues [ i ] = char ( v )                                 ;
       DefaultInputValues  [ i ] = char ( v )                                 ;
     }                                                                        ;
     //////////////////////////////////////////////////////////////////////////
     memcpy             ( conf . Oriphase     , OriphaseArduino     ,  8    ) ;
     strncpy            ( conf . Site         , ArduinoSite         , 24    ) ;
+    strncpy            ( conf . SapPassword  , SapPassword         , 32    ) ;
     strncpy            ( conf . WifiSSID     , WifiSSID            , 32    ) ;
     strncpy            ( conf . WifiPassword , WifiPassword        , 32    ) ;
     strncpy            ( conf . Username     , SiteUsername        , 32    ) ;
@@ -728,16 +804,11 @@ void ReloadEEPROM      ( void                                              ) {
     //////////////////////////////////////////////////////////////////////////
   }                                                                          ;
   ////////////////////////////////////////////////////////////////////////////
-  if                   ( Console                                           ) {
-    //////////////////////////////////////////////////////////////////////////
-    Serial . println   ( "Read Settings from EEPROM"                       ) ;
-    //////////////////////////////////////////////////////////////////////////
-  }                                                                          ;
-  ////////////////////////////////////////////////////////////////////////////
   memset               ( &conf , 0 , sizeof ( OriphaseConfigure )          ) ;
   ReadFromEEPROM       ( 0 , sizeof ( OriphaseConfigure ) , (char *) &conf ) ;
   ////////////////////////////////////////////////////////////////////////////
   ArduinoSite  = strdup ( conf . Site                                      ) ;
+  SapPassword  = strdup ( conf . SapPassword                               ) ;
   WifiSSID     = strdup ( conf . WifiSSID                                  ) ;
   WifiPassword = strdup ( conf . WifiPassword                              ) ;
   SiteUsername = strdup ( conf . Username                                  ) ;
@@ -760,26 +831,26 @@ void ReloadEEPROM      ( void                                              ) {
   MicrosecondsDelay   =       conf . MicrosecondsDelay                       ;
   WifiHttpPort        =       conf . HttpPort                                ;
   ////////////////////////////////////////////////////////////////////////////
-  if                   ( Console                                           ) {
-    //////////////////////////////////////////////////////////////////////////
-    Serial . println   ( WifiMode , DEC ) ;
-    //////////////////////////////////////////////////////////////////////////
-  }                                                                          ;
-  ////////////////////////////////////////////////////////////////////////////
 }
 //////////////////////////////////////////////////////////////////////////////
 // +| setup |+
 //////////////////////////////////////////////////////////////////////////////
 void setup                   (                                             ) {
   ////////////////////////////////////////////////////////////////////////////
+  ReloadEEPROM               (                                             ) ;
+  ////////////////////////////////////////////////////////////////////////////
   if                         ( Console                                     ) {
     Serial . begin           ( BaudRate                                    ) ;
     while                    ( ! Serial                                    ) {
       delay                  ( 1                                           ) ;
     }                                                                        ;
+    delay                    ( 1000                                        ) ;
     Serial . println         ( ""                                          ) ;
     Serial . println         ( "Oriphase Arduino Power Controller Bootup"  ) ;
   }                                                                          ;
+  ////////////////////////////////////////////////////////////////////////////
+  InitializePowerControllers (                                             ) ;
+  SetupWIFI                  (                                             ) ;
   ////////////////////////////////////////////////////////////////////////////
 }
 //////////////////////////////////////////////////////////////////////////////
@@ -787,25 +858,7 @@ void setup                   (                                             ) {
 //////////////////////////////////////////////////////////////////////////////
 // +| loop |+
 //////////////////////////////////////////////////////////////////////////////
-bool EepromInitialized = false                                               ;
-bool PowerInitialized  = false                                               ;
-bool WifiInitialized   = false                                               ;
 void loop                      (                                           ) {
-  ////////////////////////////////////////////////////////////////////////////
-  if                           ( ! EepromInitialized                       ) {
-    ReloadEEPROM               (                                           ) ;
-    EepromInitialized = true                                                 ;
-  }                                                                          ;
-  ////////////////////////////////////////////////////////////////////////////
-  if                           ( ! PowerInitialized                        ) {
-    InitializePowerControllers (                                           ) ;
-    PowerInitialized  = true                                                 ;
-  }                                                                          ;
-  ////////////////////////////////////////////////////////////////////////////
-  if                           ( ! WifiInitialized                         ) {
-    SetupWIFI                  (                                           ) ;
-    WifiInitialized   = true                                                 ;
-  }                                                                          ;
   ////////////////////////////////////////////////////////////////////////////
   ProbePowerControllers        (                                           ) ;
   DoingWIFI                    (                                           ) ;

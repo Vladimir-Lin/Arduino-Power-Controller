@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////////////
-#include "MegaPINs.h"
-#include "MegaSLOTs.h"
-#include "MegaEEPROM.h"
+#include <AitkMegaPINs.h>
+#include <AitkMegaSLOTs.h>
+#include <AitkMegaEEPROM.h>
 #include "MegaWIFI.h"
 //////////////////////////////////////////////////////////////////////////////
 void setup                   (                                             ) {

@@ -2,7 +2,7 @@
 #include <AitkMegaPINs.h>
 #include <AitkMegaSLOTs.h>
 #include <AitkMegaEEPROM.h>
-#include "MegaWIFI.h"
+#include "AitkMegaWebServer.h"
 #include "AitkMegaPowerBox.h"
 //////////////////////////////////////////////////////////////////////////////
 PowerBox PB                                                                  ;
